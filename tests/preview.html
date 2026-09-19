@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dsh-harness-ui · 真实数据源验证</title>
+<style>
+  html,body{height:100%;margin:0}
+  #bar{padding:6px 12px;background:#17150f;color:#fff;font:12px ui-monospace,monospace;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  #bar b{color:#ff8a70}
+  #bar select{font:12px ui-monospace,monospace;background:#2a2620;color:#fff;border:1px solid #555;border-radius:4px;padding:2px 6px}
+  #stage{position:relative;height:calc(100vh - 30px);overflow:hidden}
+</style>
+</head>
+<body>
+<div id="bar">
+  <span>真实数据源验证</span>
+  <label>数据面：<select id="mode">
+    <option value="full">全服务可用</option>
+    <option value="minimal">无 sessions / 无 remote</option>
+  </select></label>
+  <span id="status">…</span>
+  <span id="err" style="color:#ff6b4a"></span>
+</div>
+<div id="stage"></div>
+
+<script type="module">
+import React from 'https://esm.sh/react@18.3.1'
+import { createRoot } from 'https://esm.sh/react-dom@18.3.1/client'
+
+const status = document.getElementById('status')
+const err = document.getElementById('err')
+const stage = document.getElementById('stage')
+
+/* ---- fake DSH runtime data (shapes copied from the real contracts) ---- */
+const NOW = Date.now()
+const SESSIONS = {
+  ids: ['a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d', 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', 'c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f'],
+  byId: {
+    'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d': { id: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d', displayTitle: '独立 Web 界面原型', cwd: 'E:\\.weixincodex\\dsh-harness-ui', running: true, blank: false, updatedAt: NOW - 60000 },
+    'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e': { id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', displayTitle: '审查 DSH 插件兼容性', cwd: 'D:\\deepseek-harness', running: false, blank: false, updatedAt: NOW - 7200000 },
+    'c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f': { id: 'c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f', displayTitle: '新会话', cwd: 'E:\\', running: false, blank: true, updatedAt: NOW - 90000000 }
+  },
+  phase: 'ready'
+}
+function obs(initial) {
+  let v = initial; const subs = new Set()
+  return { getSnapshot: () => v, subscribe: (fn) => { subs.add(fn); return () => subs.delete(fn) } }
+}
+const ok = (value) => ({ ok: true, value })
+const BUNDLES = [
+  { name: '@deepseek-ai/dsh-base', version: '0.1.6', enabled: true, installed: false, optional: false, removable: false, rows: [{}, {}], description: 'Harness 基础层' },
+  { name: '@linxin666/dsh-web-all', version: '0.3.23', enabled: true, installed: true, optional: false, removable: true, rows: [{}, {}, {}], description: 'DSH Web UI 全家桶聚合插件' },
+  { name: 'dsh-cost-meter', version: '1.7.28', enabled: false, installed: true, optional: false, removable: true, rows: [{}], description: '成本计量' }
+]
+const PLUGINS = [
+  { entryId: 'e1', moduleName: '@deepseek-ai/dsh-base', enabled: true, fiberPhase: 'active' },
+  { entryId: 'e2', moduleName: '@linxin666/dsh-web-all', enabled: true, fiberPhase: 'active' },
+  { entryId: 'e3', moduleName: 'dsh-cost-meter', enabled: false, fiberPhase: null }
+]
+const SKILLS = [
+  { name: 'agent-reach', description: '15 平台互联网能力路由器', modelInvocable: true },
+  { name: 'pdf-converter', description: 'MinerU 驱动的 PDF/Office 转换', modelInvocable: true },
+  { name: 'costing-master', description: '工程造价清单与结算审核', modelInvocable: true },
+  { name: 'sequential-thinking', description: '结构化多步推理', modelInvocable: false }
+]
+const MARKET = { items: [
+  { id: 1, name: 'dsh-task-board', full_name: 'zhu1090093659/dsh-task-board', description: 'DSH Web GUI 任务看板插件', stargazers_count: 166, html_url: 'https://github.com/zhu1090093659/dsh-task-board', topics: ['dsh-plugin'] },
+  { id: 2, name: 'dsh-git-graph', full_name: 'zhu1090093659/dsh-git-graph', description: '渲染 git 提交图与分支拓扑', stargazers_count: 98, html_url: 'https://github.com/zhu1090093659/dsh-git-graph', topics: ['dsh-plugin'] },
+  { id: 3, name: 'dsh-auto-continue', full_name: 'HsiangNianian/dsh-auto-continue', description: '非人为中断后自动发送继续', stargazers_count: 103, html_url: 'https://github.com/HsiangNianian/dsh-auto-continue', topics: ['dsh-plugin'] }
+]}
+
+function makeCtx(mode) {
+  const full = mode === 'full'
+  const registry = full ? {
+    sessions: {
+      list: obs(SESSIONS),
+      refresh: async () => {},
+      retainInfo: () => obs({ referenceCount: 0, retainedBy: {} }),
+      searchResultLimit: 50
+    },
+    remote: {
+      pluginInventory: { list: async () => ok({ managementAvailable: true, entries: PLUGINS }) },
+      pluginManager: { listBundles: async () => ok(BUNDLES), listPlugins: async () => ok(PLUGINS), setBundleEnabled: async () => ok({}) },
+      skills: { list: async ({ sessionId }) => ok({ skills: SKILLS }) }
+    }
+  } : {}
+  const registrations = []
+  return {
+    registrations,
+    ctx: {
+      effect: (fn) => fn(),
+      get: (name) => registry[name],
+      slots: { inject: (n, fn) => registrations.push({ slot: n, fn }), register: (o, C) => ({ opts: o, Comp: C }) }
+    }
+  }
+}
+
+// Market fetch: serve from the fake payload instead of hitting GitHub.
+const realFetch = window.fetch
+window.fetch = async (url, opts) => {
+  if (String(url).includes('api.github.com')) {
+    return { ok: true, status: 200, statusText: 'OK', json: async () => MARKET }
+  }
+  return realFetch(url, opts)
+}
+
+window.__ModuleLoader__ = {
+  load({ id, factory }) {
+    window.__plugin = { id, mod: factory((name) => {
+      if (name === 'react') return React
+      if (name === 'react/jsx-runtime') return { jsx: () => null }
+      if (name === 'react-dom/client') return { createRoot }
+      throw new Error('unexpected require: ' + name)
+    }) }
+  }
+}
+
+let root
+async function boot(mode) {
+  err.textContent = ''
+  const { ctx, registrations } = makeCtx(mode)
+  if (!window.__plugin) await import('../lib/client.js')
+  window.__plugin.mod.apply(ctx)
+  const main = registrations.map(r => Object.assign({ slot: r.slot }, r.fn())).find(r => r.slot === 'main')
+  if (!main || !main.Comp) throw new Error('no main panel')
+  const props = Object.assign({ owner: {}, renderSlot: () => null, renderFactorySlot: () => null, session: null }, main.opts.inject ? main.opts.inject() : {})
+  if (root) root.unmount()
+  root = createRoot(stage)
+  root.render(React.createElement(main.Comp, props))
+  status.textContent = 'apply() OK · ' + registrations.length + ' 槽位 · ' + (mode === 'full' ? '全服务' : '无 sessions/remote')
+}
+
+document.getElementById('mode').addEventListener('change', e => boot(e.target.value).catch(x => { err.textContent = x.message; console.error(x) }))
+boot('full').catch(x => { status.textContent = '失败'; err.textContent = x.message; console.error(x) })
+</script>
+</body>
+</html>
