@@ -199,6 +199,15 @@ window.__ModuleLoader__.load({ id: "dsh-harness-ui", factory: (require) => {
   .hui-mrow-main span{font-size:.72rem;color:var(--hui-text-4)}
   .hui-mrow .hui-spacer{flex:1}
   .hui-keyrow{display:flex;align-items:center;gap:.5rem;margin-top:.5rem;font-size:.76rem;color:var(--hui-text-3)}
+  .hui-disco{display:flex;flex-direction:column;gap:.5rem;padding-top:.5rem}
+  .hui-disco-err{font-size:.79rem;color:var(--hui-accent);background:var(--hui-accent-soft);border:1px solid var(--hui-accent-line);border-radius:var(--hui-r-sm);padding:.45rem .6rem}
+  .hui-disco-list{display:flex;flex-direction:column;gap:.15rem;border:1px solid var(--hui-border);border-radius:var(--hui-r-sm);background:var(--hui-surface-2);padding:.5rem .6rem;max-height:15rem;overflow:auto}
+  .hui-disco-head{font-size:.74rem;color:var(--hui-text-3);margin-bottom:.25rem}
+  .hui-disco-item{display:flex;align-items:center;gap:.5rem;padding:.28rem .3rem;border-radius:var(--hui-r-sm);cursor:pointer;font-size:.8rem}
+  .hui-disco-item:hover{background:var(--hui-border-soft)}
+  .hui-disco-item input{flex:none;margin:0}
+  .hui-disco-item span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hui-disco-item em{font-style:normal;font-size:.72rem;color:var(--hui-text-4);white-space:nowrap}
   `
 
   /* ---------------- icons ---------------- */
@@ -712,6 +721,7 @@ window.__ModuleLoader__.load({ id: "dsh-harness-ui", factory: (require) => {
         provider: p, busy: !!busy,
         onCancel: () => setEditing(null),
         onSave: (draft) => saveProvider(p.key, draft),
+        onDiscover: face.discoverModels,
         onDelete: () => removeProvider(p.key)
       }) : null
       return h("div", { className: "hui-card", style: { padding: "1rem 1.1rem" }, key: p.key },
@@ -736,6 +746,7 @@ window.__ModuleLoader__.load({ id: "dsh-harness-ui", factory: (require) => {
         isNew: true, busy: !!busy,
         onCancel: () => setAdding(false),
         onSave: (draft) => saveProvider(draft.key, draft),
+        onDiscover: face.discoverModels,
         onDelete: null
       })) : null
 
@@ -753,12 +764,62 @@ window.__ModuleLoader__.load({ id: "dsh-harness-ui", factory: (require) => {
     const [apiKeyRef, setApiKeyRef] = React.useState(src.apiKeyRef || "")
     const [models, setModels] = React.useState(() => (src.models || []).map((m) => ({ id: m.id || "", name: m.name || "" })))
     const [newKey, setNewKey] = React.useState("")
+    const [disco, setDisco] = React.useState({ status: "idle", items: [], error: null, picked: {} })
 
     const upd = (i, field, v) => setModels((ms) => ms.map((m, j) => (j === i ? Object.assign({}, m, { [field]: v }) : m)))
     const addRow = () => setModels((ms) => ms.concat([{ id: "", name: "" }]))
     const delRow = (i) => setModels((ms) => ms.filter((_, j) => j !== i))
 
     const draft = () => ({ key, displayName, baseURL, api, apiKeyRef, models: models.filter((m) => m.id.trim()) })
+
+    /** Ask the host to interrogate the endpoint for its model list. */
+    async function discover() {
+      if (!props.onDiscover) return
+      setDisco({ status: "loading", items: [], error: null, picked: {} })
+      const r = await props.onDiscover({ key, baseURL, api, apiKey: newKey || undefined })
+      if (!r || r.ok === false) {
+        setDisco({ status: "error", items: [], error: (r && r.message) || "获取失败", picked: {} })
+        return
+      }
+      const have = new Set(models.map((m) => m.id))
+      const picked = {}
+      for (const it of r.items) picked[it.id] = !have.has(it.id)
+      setDisco({ status: "ready", items: r.items, error: null, picked })
+    }
+    /** Merge the ticked discoveries into the model list. */
+    function addPicked() {
+      const chosen = disco.items.filter((it) => disco.picked[it.id])
+      setModels((ms) => {
+        const have = new Set(ms.map((m) => m.id))
+        return ms.concat(chosen.filter((it) => !have.has(it.id)).map((it) => ({ id: it.id, name: it.name || it.id })))
+      })
+      setDisco({ status: "idle", items: [], error: null, picked: {} })
+    }
+
+    const canDiscover = !!(props.onDiscover && baseURL.trim() && api.trim())
+    const discoBlock = h("div", { className: "hui-disco" },
+      h("div", { className: "hui-form-row" },
+        h("button", {
+          className: "hui-btn ghost sm", disabled: !canDiscover || disco.status === "loading", onClick: discover,
+          title: canDiscover ? "向该端点查询可用模型" : "需要先填 Base URL 与 API 类型"
+        }, disco.status === "loading" ? "获取中…" : "从端点获取模型"),
+        !canDiscover ? h("span", { className: "hui-muted", style: { padding: 0 } }, "填好 Base URL 与 API 类型后可自动获取") : null),
+      disco.status === "error" ? h("div", { className: "hui-disco-err" }, disco.error) : null,
+      disco.status === "ready" ? (disco.items.length
+        ? h("div", { className: "hui-disco-list" },
+            h("div", { className: "hui-disco-head" }, "发现 " + disco.items.length + " 个模型，勾选后加入列表"),
+            disco.items.map((it) => h("label", { className: "hui-disco-item", key: it.id },
+              h("input", {
+                type: "checkbox", checked: !!disco.picked[it.id],
+                onChange: (e) => setDisco((d) => Object.assign({}, d, { picked: Object.assign({}, d.picked, { [it.id]: e.target.checked }) }))
+              }),
+              h("span", { className: "hui-mono" }, it.id),
+              it.name && it.name !== it.id ? h("em", null, it.name) : null,
+              it.contextWindow ? h("em", null, Math.round(it.contextWindow / 1000) + "k ctx") : null)),
+            h("div", { className: "hui-form-row" },
+              h("button", { className: "hui-btn dark sm", onClick: addPicked }, "加入所选"),
+              h("button", { className: "hui-btn ghost sm", onClick: () => setDisco({ status: "idle", items: [], error: null, picked: {} }) }, "取消")))
+        : h("div", { className: "hui-muted" }, "该端点未报告任何模型")) : null)
 
     return h("div", { className: "hui-form" },
       h("div", { className: "hui-form-grid" },
@@ -773,7 +834,8 @@ window.__ModuleLoader__.load({ id: "dsh-harness-ui", factory: (require) => {
           h("input", { className: "hui-input hui-mono", value: m.id, placeholder: "model-id", onChange: (e) => upd(i, "id", e.target.value) }),
           h("input", { className: "hui-input", value: m.name, placeholder: "显示名（可选）", onChange: (e) => upd(i, "name", e.target.value) }),
           h("button", { className: "hui-btn ghost sm", onClick: () => delRow(i), title: "删除该模型" }, h(IconTrash)))),
-        h("button", { className: "hui-btn ghost sm", onClick: addRow }, h(IconPlus), "添加模型")),
+        h("button", { className: "hui-btn ghost sm", onClick: addRow }, h(IconPlus), "添加模型"),
+        discoBlock),
       apiKeyRef && !props.isNew ? h("div", { className: "hui-form-key" },
         h("div", { className: "hui-sec" }, "更新密钥（写入凭据存储）"),
         h("div", { className: "hui-form-row" },
@@ -976,6 +1038,20 @@ window.__ModuleLoader__.load({ id: "dsh-harness-ui", factory: (require) => {
         const r = await creds.set(ref, value)
         if (r && r.ok === false) return { ok: false, message: (r.error && r.error.message) || "写入被拒绝" }
         return { ok: true }
+      },
+      /* interrogate an endpoint for its model list (no credential is stored) */
+      discoverModels: async (draft) => {
+        const llm = read("remote.llm")
+        if (!llm || !llm.discoverModels) return { ok: false, message: "llm 服务不可用" }
+        const request = { baseURL: draft.baseURL, api: draft.api }
+        // A route the adapter already knows answers from its own registry.
+        if (draft.key) request.provider = draft.key
+        // A key typed into the form is used for this call only; the host never stores it.
+        if (draft.apiKey) request.apiKey = draft.apiKey
+        const r = await llm.discoverModels(LLM_NS, request)
+        if (r && r.ok === false) return { ok: false, message: (r.error && r.error.message) || "端点拒绝了查询" }
+        const items = ((r && r.value) || []).map((m) => ({ id: m.id, name: m.name || m.id, contextWindow: m.contextWindow, maxTokens: m.maxTokens }))
+        return { ok: true, items }
       },
       selectModel: async (sessionId, selection) => {
         const session = read("remote.session")

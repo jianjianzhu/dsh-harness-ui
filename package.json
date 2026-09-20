@@ -1,6 +1,6 @@
 {
   "name": "dsh-harness-ui",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Full-page Harness console for the DeepSeek Harness Web GUI: sessions, plugins, market, MCP, skills and usage in one shell.",
   "keywords": [
     "deepseek-harness",
